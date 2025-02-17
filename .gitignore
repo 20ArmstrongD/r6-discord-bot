@@ -4,3 +4,4 @@ pivenv
 macvenv
 events/scrapper_test.py
 events/fortnite
+images/

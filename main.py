@@ -1,9 +1,8 @@
 import discord
 from discord import app_commands
-import aiohttp  
 import logging
 import time
-import asyncio
+import inspect
 from events import (
     checkEnvVar, 
     DISCORD_BOT_TOKEN,
@@ -11,7 +10,8 @@ from events import (
     botstuff,
     intent,
     on_Ready,
-    get_r6siege_player_data
+    get_r6siege_player_data,
+    generate_link, 
 )
 
 logging.basicConfig(
@@ -34,105 +34,104 @@ bot = botstuff
 async def on_ready():
     await on_Ready()
 
-# Slash command definition
-@bot.tree.command(guild=discord.Object(id=GUILD_ID), name="r6stats", description="Fetch Rainbow Six Siege stats for a player")
-@app_commands.describe(username="Enter the player's name", platform="Enter the platform (PC, Xbox, PlayStation)", link_option="For just the link type 'yes'")
-async def r6stats(interaction: discord.Interaction, username: str, platform: str, link_option: str = None):
 
+game_choices = [
+    app_commands.Choice(name = "Fortnite", value = "fortnite"),
+    app_commands.Choice(name = "Rainbow Six Siege", value = "siege"),
+    ]
+# Slash command definition
+@bot.tree.command(guild=discord.Object(id=GUILD_ID), name="game_stats", description="Fetch game stats for a player")
+@app_commands.describe(username="Enter the player's name",game='Choose a game' ,platform="Enter the platform (PC, Xbox, PlayStation)")
+@app_commands.choices(game=game_choices)
+async def pull_stats(interaction: discord.Interaction, game: app_commands.Choice[str], username: str, platform: str = None, ):
+
+    game = game.value
+    print(f"Selected game: {game}")
     user = interaction.user
     channel_location = interaction.channel
     await interaction.response.defer()
     start_time = time.time()
-
-    try:
+    if platform is not None:
         platform = platform.lower()
-        link_option = link_option.lower() if link_option else None
-        
-        if platform == 'pc':
-            logging.info(f"{platform} element found")
-            platform = 'ubi'
-        elif platform == 'xbox':
-            logging.info(f"{platform} element found")
-            platform = 'xbl'
-        elif platform == 'playstation':
-            logging.info(f"{platform} element found")
-            platform = 'psn'
-        else:
-            logging.error(f"Failed to find {platform} platform")
-            await interaction.followup.send("Failed to find platform. Please try again later.")
-            return  # Exit early if the platform is invalid
-
-    except Exception as e:
-        logging.error(f'Failed to convert to {platform}')
-
-    api_url = f'https://r6.tracker.network/r6siege/profile/{platform}/{username}/overview'
-    
-    try:
-        # Use aiohttp to make the request asynchronously
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=20) as response:
-                if response.status == 200:
-                    if link_option is None:
-
-                        kd, level, playtime, rank, ranked_kd, user_profile_img, rank_img =  await get_r6siege_player_data(api_url)
-                        print("\n")
-                        logging.info(f"-----Scraping complete!-----\n")
-                        
-                        # Create embed message for 'no' link option
-                        embed = discord.Embed(title=f"Stats for {username} on {platform.capitalize()}\n", color=discord.Color.yellow())
-                        embed.add_field(name="**Overall Stats**", value=f" * Level: {level}\n * All playlist KD Ratio: {kd}\n * Total Play Time: {playtime}", inline=False)
-                        embed.add_field(name="**Ranked Stats**", value=f" * Current Rank: {rank}\n * Ranked KD: {ranked_kd}", inline=False)
-                        embed.set_thumbnail(url=user_profile_img)  
-                        embed.set_image(url=rank_img)  
+        try:
             
-                        # Send embed message for 'yes' link option
-                        logging.info(f"Replying to {user} in {channel_location}")
-                        logging.info(f"this link was generated: {api_url}")
-                        await interaction.followup.send(embed=embed)
+            if platform == 'pc':
+                logging.info(f"{platform} element found")
+                platform = 'ubi'
+            elif platform == 'xbox':
+                logging.info(f"{platform} element found")
+                platform = 'xbl'
+            elif platform == 'playstation':
+                logging.info(f"{platform} element found")
+                platform = 'psn'
+            else:
+                logging.error(f"Failed to find {platform} platform")
+                await interaction.followup.send("Failed to find platform. Please try again later.")
+                return  # Exit early if the platform is invalid
+        except Exception as e:
+            print("failed to convert platform")   
+    else:
+        pass 
 
-                        end_time = time.time()
-                        time_duration = end_time - start_time
-                        logging.info(f"time to completion: {time_duration:.2f} seconds on request")
+    game_scrapers = {
+        "siege": {"func": get_r6siege_player_data, "requires_platform": True},
+        "fortnite": {"func": get_fortnite_player_data, "requires_platform": False}
+    }
 
-                    
-                    elif link_option is not None:
-                        # api_url = f'https://r6.tracker.network/r6siege/profile/{platform}/{username}/overview'
-                        logging.info(f"Link generated, replying to {user.display_name} in {channel_location} channel.")
-                        
-                        # Create embed message for 'Just link' option
-                        embed = discord.Embed(title=f"Stats for {username} on {platform.capitalize()}\n", color=discord.Color.yellow())
-                        embed.add_field(name=f"Can be found on this link:", value=f"{api_url}")
+    print(f"Received game: '{game}', Lowercased: '{game.lower()}'")
 
-                        # Send embed message for'Just link' option
-                        logging.info(f"Sending this message to {user} in {channel_location} channel: \n{embed}")
-                        await interaction.followup.send(embed=embed)
+    if game not in game_scrapers:
+        await interaction.followup.send(f"{game} not supported. Please pick from these options:")  
+        return  
 
-                        end_time = time.time()
-                        time_duration = end_time - start_time
-                        logging.info(f"time to completion: {time_duration:.2f} seconds on request")
+    scraper_functions = game_scrapers[game]["func"]
+    requires_platform = game_scrapers[game]["requires_platform"]
+    
+    if requires_platform and not platform:
+        await interaction.followup.send(f"{game} requires a platform (PC, Xbox, PSN)")
+    
+    num_args = len(inspect.signature(scraper_functions).parameters)
+    # if asyncio.iscoroutinefunction(scraper_functions):
+    if num_args == 2:
+        kd, level, playtime, rank, ranked_kd, user_profile_img, rank_img = await get_r6siege_player_data(username, platform)
 
-                    else:
-                        await interaction.followup.send("Failed to fetch stats. Please try again later.")
-                        end_time = time.time()
-                        time_duration = end_time - start_time
-                        logging.error(f"time to failure: {time_duration:.2f} seconds on request")
-
-                else:
-                    await interaction.followup.send("Failed to complete request.")
-                    end_time = time.time()
-                    time_duration = end_time - start_time
-                    logging.error(f"time to failure: {time_duration:.2f} seconds on request")
+        # If any value is None, provide a default
+        kd = kd if kd is not None else "N/A"
+        level = level if level is not None else "N/A"
+        playtime = playtime if playtime is not None else "N/A"
+        rank = rank if rank is not None else "N/A"
+        ranked_kd = ranked_kd if ranked_kd is not None else "N/A"
+        user_profile_img = user_profile_img if user_profile_img is not None else "N/A"
+        rank_img = rank_img if rank_img is not None else "N/A"
         
-    except asyncio.TimeoutError:
-        await interaction.followup.send("The request timed out. Please try again later.")
-        end_time = time.time()
-        time_duration = end_time - start_time
-        logging.error(f"time to failure: {time_duration:.2f} seconds on request")
-    except Exception as e:
-        await interaction.followup.send(f"An error occurred: {str(e)}. Please try again later.")
-        end_time = time.time()
-        time_duration = end_time - start_time
-        logging.error(f"time to failure: {time_duration:.2f} seconds on request")
+
+        # Use the values as needed
+        print(f"KD: {kd}, Level: {level}, Playtime: {playtime}, Rank: {rank}")
+        
+        embed = discord.Embed(title=f"Stats for {username} on {game.capitalize()}\n", color=discord.Color.yellow())
+        embed.add_field(name="**Overall Stats**", value=f" * Level: {level}\n * All playlist KD Ratio: {kd}\n * Total Play Time: {playtime}", inline=False)
+        embed.add_field(name="**Ranked Stats**", value=f" * Current Rank: {rank}\n * Ranked KD: {ranked_kd}", inline=False)
+        embed.set_thumbnail(url=user_profile_img)  
+        embed.set_image(url=rank_img)  
+        await interaction.followup.send(embed=embed)
+
+    elif num_args ==1:
+        
+        url= await generate_link(username)
+        
+        if url is None:
+            await interaction.followup.send("Failed to generate the link.")
+            return
+        
+        embed = discord.Embed(title=f"Here is the link for {username}'s Fortnite stats", color=discord.Color.purple())
+        embed.add_field(name="Link", value = f"{url}", inline=False)
+        await interaction.followup.send(embed=embed)
+    
+    else:
+        await interaction.followup.send(f"Could not fetch stats for {username} in {game.capitalize()}.**")
+        
+
+   
 
 # Run the bot
 bot.run(DISCORD_BOT_TOKEN)
